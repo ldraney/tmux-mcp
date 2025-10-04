@@ -19,11 +19,6 @@ class TmuxMCPServer {
       {
         name: 'tmux-mcp',
         version: '1.0.0',
-      },
-      {
-        capabilities: {
-          tools: {},
-        },
       }
     );
 
@@ -140,6 +135,74 @@ class TmuxMCPServer {
               },
             },
           },
+          {
+            name: 'tmux_open_obsidian_note',
+            description: 'Open a new Obsidian note in nvim in a new pane',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                vault: {
+                  type: 'string',
+                  description: 'Vault name (optional, will list available vaults if not provided)',
+                },
+                note_name: {
+                  type: 'string',
+                  description: 'Name of the new note file (optional, will generate timestamp if not provided)',
+                },
+                split: {
+                  type: 'string',
+                  enum: ['horizontal', 'vertical'],
+                  description: 'How to split for the new pane',
+                  default: 'horizontal',
+                },
+              },
+            },
+          },
+          {
+            name: 'claude_mcp_add',
+            description: 'Add a new MCP server to Claude Code',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                name: {
+                  type: 'string',
+                  description: 'Name for the MCP server',
+                },
+                command: {
+                  type: 'string',
+                  description: 'Command to run the MCP server',
+                },
+                args: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Arguments for the command (optional)',
+                },
+                env: {
+                  type: 'object',
+                  description: 'Environment variables (optional)',
+                },
+                transport: {
+                  type: 'string',
+                  enum: ['stdio', 'sse', 'http'],
+                  description: 'Transport type (default: stdio)',
+                  default: 'stdio',
+                },
+                url: {
+                  type: 'string',
+                  description: 'URL for remote servers (required for sse/http)',
+                },
+              },
+              required: ['name'],
+            },
+          },
+          {
+            name: 'claude_mcp_list',
+            description: 'List all configured MCP servers in Claude Code',
+            inputSchema: {
+              type: 'object',
+              properties: {},
+            },
+          },
         ],
       };
     });
@@ -161,6 +224,12 @@ class TmuxMCPServer {
             return await this.sendKeys(args as any);
           case 'tmux_open_nvim':
             return await this.openNvim(args as any);
+          case 'tmux_open_obsidian_note':
+            return await this.openObsidianNote(args as any);
+          case 'claude_mcp_add':
+            return await this.claudeMcpAdd(args as any);
+          case 'claude_mcp_list':
+            return await this.claudeMcpList();
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
@@ -313,6 +382,106 @@ class TmuxMCPServer {
         {
           type: 'text',
           text: `Opened nvim${args.file ? ` with file: ${args.file}` : ''} in new pane`,
+        },
+      ],
+    };
+  }
+
+  private async openObsidianNote(args: {
+    vault?: string;
+    note_name?: string;
+    split?: 'horizontal' | 'vertical';
+  }) {
+    const obsidianBase = '/Users/ldraney/Library/Mobile Documents/iCloud~md~obsidian/Documents';
+    
+    if (!args.vault) {
+      const { stdout } = await execAsync(`ls "${obsidianBase}"`);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Available vaults:\n${stdout}`,
+          },
+        ],
+      };
+    }
+
+    const vaultPath = `${obsidianBase}/${args.vault}`;
+    const noteName = args.note_name || new Date().toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-') + '.md';
+    const filePath = `${vaultPath}/${noteName}`;
+    
+    const splitFlag = args.split === 'vertical' ? '-v' : '-h';
+    const cmd = `tmux split-window ${splitFlag} -c "${vaultPath}" "nvim '${filePath}'"`;
+
+    await execAsync(cmd);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Opened new Obsidian note "${noteName}" in vault "${args.vault}"`,
+        },
+      ],
+    };
+  }
+
+  private async claudeMcpAdd(args: {
+    name: string;
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    transport?: 'stdio' | 'sse' | 'http';
+    url?: string;
+  }) {
+    let cmd = `claude mcp add`;
+    
+    if (args.transport && args.transport !== 'stdio') {
+      cmd += ` --transport ${args.transport}`;
+    }
+    
+    if (args.env) {
+      for (const [key, value] of Object.entries(args.env)) {
+        cmd += ` --env ${key}=${value}`;
+      }
+    }
+    
+    cmd += ` ${args.name}`;
+    
+    if (args.transport === 'sse' || args.transport === 'http') {
+      if (!args.url) {
+        throw new Error('URL is required for sse/http transport');
+      }
+      cmd += ` ${args.url}`;
+    } else {
+      if (!args.command) {
+        throw new Error('Command is required for stdio transport');
+      }
+      cmd += ` ${args.command}`;
+      if (args.args) {
+        cmd += ` ${args.args.join(' ')}`;
+      }
+    }
+
+    const { stdout, stderr } = await execAsync(cmd);
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Added MCP server "${args.name}"\n${stdout}${stderr ? `\nErrors: ${stderr}` : ''}`,
+        },
+      ],
+    };
+  }
+
+  private async claudeMcpList() {
+    const { stdout } = await execAsync('claude mcp list');
+    
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Configured MCP servers:\n${stdout}`,
         },
       ],
     };
